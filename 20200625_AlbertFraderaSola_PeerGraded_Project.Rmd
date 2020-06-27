@@ -1,0 +1,342 @@
+---
+title: "Regression Models Course"
+subtitle: "Peer graded project - Motor trend MPG data analysis"
+author: "Albert Fradera Sola"
+date: "`r Sys.Date()`"
+toc: TRUE
+output: pdf_document
+---
+
+# Motor trend MPG data analysis
+
+```{r, echo=FALSE,warning=FALSE,message=FALSE}
+library(pander)
+library(knitr)
+library(ggplot2)
+library(viridis)
+library(scales)
+library(GGally)
+library(dplyr)
+library(leaps)
+options(knitr.kable.NA = '')
+
+```
+
+## Overview
+
+You work for Motor Trend, a magazine about the automobile industry. Looking at a data set of a collection of cars, they are interested in exploring the relationship between a set of variables and miles per gallon (MPG) (outcome). They are particularly interested in the following two questions:
+
+* Is an automatic or manual transmission better for MPG
+* Quantify the MPG difference between automatic and manual transmissions
+
+## 1: Data load, exploratory analysis and summary
+
+We start by loading the data and storing it into a data frame:
+
+```{r}
+data("mtcars") # Load the data
+mtcars_df <- as.data.frame(mtcars) # Store it on a data frame
+```
+
+First thing we do is to check how our data looks like:
+
+```{r}
+kable(head(mtcars_df, n = 4), caption = "First 4 entries on the data set")
+```
+
+We have 11 variables; but looking at the head, we cannot grasp the full information on the variables. Thus, and looking for more details on the data set, we go to the package documentation to find the following information on the variables:
+
+* mpg:	 Miles/(US) gallon
+* cyl:	 Number of cylinders
+*	disp:	 Displacement (cu.in.)
+*	hp:	   Gross horsepower
+*	drat:	 Rear axle ratio
+*	wt:	   Weight (1000 lbs)
+*	qsec:	 1/4 mile time
+*	vs:	   Engine (0 = V-shaped, 1 = straight)
+*	am:	   Transmission (0 = automatic, 1 = manual)
+*	gear:	 Number of forward gears
+*	carb:	 Number of carburetors
+
+Next step is to check wether the variables are numerical or categorical:
+
+```{r}
+pander(as.data.frame(t(apply(mtcars_df,2,class))),
+       split.table = 80,
+       style = "rmarkdown", 
+       caption = "Class of the variables")
+```
+
+We relabel those variables that are categorical and whose classes are assigned as numerical:
+
+```{r}
+# Change attributes from numeric to factor
+mtcars_df$cyl <- factor(mtcars_df$cyl)
+mtcars_df$vs <- factor(mtcars_df$vs)
+mtcars_df$am <- factor(mtcars_df$am, labels = c("AT","MT")) #Relabel: 0, automatic (AT) and 1, manual (MT)
+mtcars_df$gear <- factor(mtcars_df$gear)
+mtcars_df$carb <- factor(mtcars_df$carb)
+```
+
+Thus we could consider which is the influnce of the the type of transmission (automatic or manual) to the mpg and if other factors may have an influence. The head of the data frame only gives information about the structure of the data frame. We will get more details on how many items of each we have by doing a data summary:
+
+```{r}
+# Summary of our data
+pander(summary(mtcars_df), 
+       split.table = 80, 
+       style = 'rmarkdown', 
+       caption = "Data set summary",
+       missing = "") 
+```
+
+For the continous variables we obtain the mean, the median and the quantiles. For the discrete variables we obtain the number of entries. Next step is to see if we have an equal number of entries per each transmission:
+
+```{r}
+kable(table(mtcars_df$am), caption = "Number of observations")
+```
+
+Next would be to look the distribution of our countinous variable and overlay the density of our discrete variables of interest:
+
+```{r}
+colours <- viridis_pal(alpha = 1, begin = 0.2, end = 0.9, direction = 1,option = "D")(2)
+
+densityplot_1 <-  ggplot(data = mtcars_df, mapping = aes(x = mpg))+
+                  geom_histogram(binwidth = 1,aes(y = ..density..))+
+                  geom_density(data = mtcars_df[mtcars_df$am == "AT", ],
+                               aes(color = "Automatic",
+                                   fill="Automatic"),
+                               alpha=.2)+
+                  geom_density(data = mtcars_df[mtcars_df$am == "MT", ],
+                               aes(color = "Manual",
+                                   fill="Manual"),
+                               alpha=.2)+
+                  scale_y_continuous(labels = percent_format())+
+                  scale_colour_manual("Transmission", values = c("Automatic" = colours[1],
+                                                               "Manual" = colours[2]))+
+                  scale_fill_manual("Transmission", values = c("Automatic" = colours[1],
+                                                             "Manual" = colours[2]))+
+                  ggtitle("MPG: Transmission distribution")+
+                  theme_minimal()
+
+print(densityplot_1)
+```
+
+Now that we know how our data looks like, we can start exploring its properties. We start by obtaining the mpg mean and the variance for the different transmissions:
+
+```{r}
+# Transmission infered values:
+kable(cbind(tapply(mtcars_df$mpg, list(mtcars_df$am), mean),
+            tapply(mtcars_df$mpg, list(mtcars_df$am), var)),
+      digits = 2,
+      caption = "Transmssion estimate values",
+      col.names = c("Mean", "Variance"))
+```
+
+A better way to visualize the quantiles and means of our data is via graphical exploration. Thus we draw  boxplots of the mpg depending on the transmission:
+
+```{r}
+boxplot_1 <-  ggplot(data = mtcars_df, mapping = aes(x = am, y = mpg, fill = am))+
+              geom_boxplot()+
+              geom_jitter()+
+              scale_fill_viridis(discrete = T, option = "D", end = 0.9, begin = 0.2)+
+              ggtitle("MPG vs. type of transmission")+
+              scale_x_discrete(labels = c('Automatic','Manual'))+
+              xlab("Type of transmission")+
+              theme_minimal()+
+              theme(legend.position = "none")
+print(boxplot_1)
+```
+
+Overall, we observe that the type of transmission change the shape of the distribution of mpg. This is supported by different mpg means and all the graphical visual exploration. But are those differences signigicant? We will test that on the following block.
+
+## 2: Data analyis
+
+### Testing for differences
+
+During he exploratory analysis we saw that there are differences on the MPG when looking at the inluence of the transmission. To test wether those differences are significant or not, we are going to perform a t test to accept or reject the following hyphothesis:
+
+$$ H_0 : \mu_1 = \mu_2 $$
+
+$$ H_\alpha : \mu_1 \neq \mu_2 $$
+
+We assume that the distribution follows normality and that there is no equality on the variances.
+
+```{r}
+ttest <- t.test(mpg ~ am, data = mtcars, paired = FALSE)
+print(ttest)
+```
+
+We oserve that 0 is not included in our confidence interaval and that we obatin a p-value lower than our significance threshold of 0.05 (p-value = `r round(ttest$p.value, digits = 4)`). Thus we **reject the null hyphothesis**. Thus, mpg is defiened by the transmission value. But, is it the only variable explaining MPG?
+
+### Fitting a regression model
+
+We know that MPG is influenced by the transmission, but we need to asses wether is the only variable explaining it or if there are more variables which have an influence on MPG. First thing we do, is to model MPG in function of the transmission:
+
+```{r}
+single_fit <- lm(mpg ~ am, mtcars_df) # linear model including only transmission
+print(summary(single_fit))
+```
+
+Our coefficients show us the estimate for the automatic transmission (intercept = 17.47) and the manual transmission (amMT = 24.39 or 17.147 + 7.245). This estimations match with the infered mean obtained previously on the hypothesis testing. We also observe that the linear model including a single regressor, am, returns significant pvalues for the coefficients but a low R^2^ value (R^2^ = `r round(summary(single_fit)$r.squared, digits = 2)`). An interepretation of this result would be that our regressor, tansmission type, only explains 36% of the MPG differences. Thus, we should explore the influence of the other variables on MPG. We start by showing how they correlate:
+
+```{r}
+cor <- cor(mtcars$mpg, mtcars) # Compute the correlation between samples
+corord <- as.data.frame(t(cor[,order(-abs(cor[1,]))]))
+cor_test <- cor
+for (i in 1:ncol(cor_test)) {
+  cor_test_loop <- cor.test(mtcars$mpg, mtcars[,colnames(cor_test)[i]])
+  pval <- cor_test_loop$p.value
+  cor_test[i] <- pval
+}
+table <- rbind(corord,cor_test)
+rownames(table) <- c("Coeficient", "P-value")
+# Print correlation coeficient in decreasing order with they p-values
+pander(table, 
+       split.table = 80, 
+       style = 'rmarkdown', 
+       caption = "Correlation coeficient and its associated p-value",
+       missing = "",
+       digits = 2)
+```
+
+All the variables seem to be more or less significantly correlated to MPG. This can also be shown on a pairs plot:
+
+```{r}
+mtcars_df %>% 
+ggpairs(.,
+     mapping = ggplot2::aes(color = am), 
+     upper = list(continuous = wrap("cor", size = 3), combo = wrap("box_no_facet")),
+     lower = list(continuous = wrap("smooth", alpha=0.4, size=1), combo = wrap("dot"))
+   )
+```
+
+Knowing that, in a higher or lower degree, all variables have an influence on MPG we are going to try to fit a new model including all variables:
+
+```{r}
+all_fit <- lm(mpg ~ ., mtcars_df)
+print(summary(all_fit))
+```
+
+We can see now that our R^2^ is much higher (R^2^_allfit_ = `r round(summary(all_fit)$r.squared, digits = 2)`)) than before (R^2^_singlefit_ = `r round(summary(single_fit)$r.squared, digits = 2)` ). But even now we are able to explain more differences on MPG, none of our coefficients are significant, as none is lower than 0.05:
+
+```{r}
+df <- as.data.frame((-log10(summary(all_fit)$coefficients[,4])))
+colnames(df) <- "pval"
+df$Variable <- rownames(df)
+barplot <-  ggplot(data = df, aes(x = Variable, y = pval, fill = Variable))+
+            geom_bar(stat = "identity", show.legend = F)+
+            scale_fill_viridis(discrete = T, option = "D", end = 0.9, begin = 0.2)+
+            geom_hline(aes(yintercept = -log10(0.05),
+            linetype = "-log10(0.05)"),
+            color = "red")+
+            scale_linetype_manual(name = "Significance threshold", values = c(2, 2),
+            guide = guide_legend(override.aes = list(color = c("red"))))+
+            ggtitle("Influence on different car variables on MPG")+
+            ylab("-log10(pval)")+
+            theme_minimal()+
+            theme(axis.text.x = element_text(angle = 45, hjust = 1))
+print(barplot)
+```
+
+We can observe that none of the variables reach our significance threshold. Since regressors can correlate among them and not only to MPG, we might be overfitting the model and not predicting the MPG differences in a correct way. To check which regressors are helpful in our model, we should check all the model combinations with the different regressors and choose which fits better. We explore three different criteria to choose which model to keep:
+
+* Akaike information criterion (AIC), as implemented in step function. 
+* Mallows's Cp, as implemented in regsubsets function. The lower is this value, the better a model fits. Similiar to AIC
+* Bayesian information criterion (BIC), as implemented in regsubsets function. The lower is this value, the better a model fits. More restricitve (higher penalty for parameter) than AIC.
+
+Thus we proceed to compute the values for the different criteria so we can make a good model decision:
+
+```{r}
+# Compute AIC for all models
+step_fit <- step(all_fit,direction="both",trace=F)
+print(summary(step_fit))
+# Compute Cp and BIC for all models
+subset_fit <- regsubsets(mpg ~ ., mtcars_df, nvmax = 25)
+subset_fit_summary <- summary(subset_fit)
+adjr2 <- which.max(subset_fit_summary$adjr2) # Model with higher Rsquared
+cp <- which.min(subset_fit_summary$cp) # Model with lower Cp
+bic <- which.min(subset_fit_summary$bic) # Model with lower BIC
+best_set <- subset_fit_summary$outmat[c(adjr2,cp,bic),] # Filter summary following our criteria
+rownames(best_set) <- c(paste0("Rsquared model (", adjr2,")"),
+                        paste0("Cp Model (", cp,")"),
+                        paste0("BIC model (", bic,")"))
+pander(best_set, 
+       split.table = 80, 
+       style = 'rmarkdown', 
+       caption = "Selected models with Rsquared, Cp and BIC",
+       missing = "",
+       digits = 2)
+```
+
+
+We can observe that, while Cp and BIC return the same model, AIC gives us a different model. Besides we also selected the one that gave us the best R^2^. Thus we ended up with the following models:
+
+* AIC: mpg ~ cyl + hp + wt + am
+* R^2^: mpg ~ am + cyl + hp + wt + vs
+* Cp and BIC: mpg ~ am + wt + qsec
+
+Our next step will be to explore the different models and keep the one with a better fit. Thus we fit the trhee models and select the R^2^ value and the p-value for our regressor of interest (am) and keep the model that gives us a combined better performance:
+
+```{r}
+# Models
+model_AIC <- lm(mpg ~ cyl + hp + wt + am, mtcars_df)
+model_R2 <- lm(mpg ~ am + cyl + hp + wt + vs, mtcars_df)
+model_CB <- lm(mpg ~ am + wt + qsec, mtcars_df)
+# Keep Rsquared
+R_squared <- round(c(summary(model_AIC)$adj.r.squared,
+                         summary(model_R2)$adj.r.squared,
+                         summary(model_CB)$adj.r.squared),4)
+# Keep p-values
+amMT_Pvalues <- round(c(-log10(summary(model_AIC)$coefficients["amMT",4]),
+                        -log10(summary(model_R2)$coefficients["amMT",4]),
+                        -log10(summary(model_CB)$coefficients["amMT",4])),4)
+# Build data frame
+Model <- c("AIC", "Rsquared", "Cp and BIC")
+df <- data.frame(Model, R_squared, amMT_Pvalues)
+barplot <-  ggplot(data = df, aes(x = Model, y = amMT_Pvalues, fill = R_squared))+
+            geom_bar(stat = "identity", show.legend = T)+
+            scale_fill_viridis(discrete = F, option = "D", end = 0.9, begin = 0.8)+
+            geom_hline(aes(yintercept = -log10(0.05),
+            linetype = "-log10(0.05)"),
+            color = "red")+
+            scale_linetype_manual(name = "Significance threshold", values = c(2, 2),
+            guide = guide_legend(override.aes = list(color = c("red"))))+
+            ggtitle("Model Selection")+
+            ylab("-log10(pval)")+
+            theme_minimal()+
+            theme(axis.text.x = element_text(angle = 45, hjust = 1))
+print(barplot)
+```
+
+While all the models show a similiar amount of MPG variation explanation (very close R^2^ values) there is only one model that accounts for transmission as signigicant. Since this is our regressor of interest, we choose it as our final model. Thus our final model results from both Cp and BIC criteria and includes the following regressors:
+
+*	wt:	   Weight (1000 lbs)
+*	qsec:	 1/4 mile time
+*	am:	   Transmission (0 = automatic, 1 = manual)
+
+Our last step is to check the diagnostic plots for our selected model:
+
+```{r}
+par(mfrow = c(2,2))
+plot(model_CB, col = "darkgreen", lwd = 2)
+```
+
+The diagnosis plots show us the following:
+
+* Residuals vs Fitted: They do not follow any particular pattern, looks like randomly distributted which is a good sign.
+* Normal Q-Q: The points only deviate slightly from the diagonal, indicating that data follows normality
+* Scale-location: The residues spread slightly wider on the upward slope
+* Residuals vs leverage: No point appears to have leverage nor point has to be considered an outlayer
+
+## 3: Conclusions:
+
+Before taking our final conclusions, we look at the summary of our selected model:
+
+```{r}
+print(summary(model_CB))
+```
+
+
+If you want to optimize the MPG on the road the best way to go is to select **a manual transmission**. It is confirmed to have a higher MPG by t-test with a significance value lower than 0.05 (p-value = `r round(ttest$p.value, digits = 4)`)). Our best regression model predicts an increase of 2.935 MPG when using manual transmission with a significance value lower than 0.05 (p-value = 0.0467) and a high R^2^ (R^2^ = 0.8336). The model also shows that **transmission** is not the only variable that explains MPG, as both **weight** and **qsec** are also included in our model.
+
+We have to take these results carefully, as the scale-location diagnosis plot show that we might be missing something in our model (tends to spread slightly wider on the upward slope), which might be related to low number of observations. Thus we cannot guarantee that with an increased number of observations this model stands true.
